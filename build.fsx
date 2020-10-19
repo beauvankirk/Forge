@@ -5,6 +5,7 @@
 #load ".fake/build.fsx/intellisense.fsx"
 
 open Fake.Core
+open Fake.Core.Xml
 open Fake.DotNet
 open Fake.Tools
 open Fake.IO
@@ -43,17 +44,18 @@ let forgeSh = "./forge.sh"
 // --------------------------------------------------------------------------------------
 let isNullOrWhiteSpace = System.String.IsNullOrWhiteSpace
 let exec cmd args dir =
-    if Process.execSimple( fun info ->
+    // let mmm =sprintf "Error while running '%s' with args: %s" cmd args
+    Command.RawCommand(cmd, Arguments.OfArgs(args))
+    |> CreateProcess.fromCommand
+    |> (
+        fun p ->
+            if (isNullOrWhiteSpace dir)
+                then CreateProcess.withWorkingDirectory dir p else p)
+    |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while running '%s' with args: %s" cmd (args.ToString()))
+                // (if (isNullOrWhiteSpace dir) then p.InternalWorkingDirectory else Some dir))
+    |> Proc.run
+    |> ignore
 
-        { info with
-            FileName = cmd
-            WorkingDirectory =
-                if (isNullOrWhiteSpace dir) then info.WorkingDirectory
-                else dir
-            Arguments = args
-            }
-    ) System.TimeSpan.MaxValue <> 0 then
-        failwithf "Error while running '%s' with args: %s" cmd args
 let getBuildParam = Environment.environVar
 
 let DoNothing = ignore
@@ -105,15 +107,43 @@ Target.create "Restore" (fun _ ->
 Target.create "Build" (fun _ ->
     DotNet.build id ""
 )
+let projectFrameworks projPath = 
+    projPath
+    |> Xml.loadDoc
+    |> Xml.getSubNode "Project"
+    |> Xml.getSubNode "PropertyGroup"
+    |> Xml.getSubNode "TargetFrameworks"
+    |> fun (n) -> n.InnerText
+    |> String.split ';'
 
-Target.create "Publish" (fun _ ->
-    DotNet.publish (fun p -> {p with OutputPath = Some buildDir}) "src/Forge"
 
+Target.create "Publish" (
+    fun _ ->
+        
+        let globResult = !! "src/Forge/Forge.fsproj"
+        Seq.iter (printfn "Glob result: %A") globResult
+        globResult
+        |> Seq.iter (fun projPath ->
+            let frameworks = projectFrameworks projPath
+            printfn "Found frameworks: %A" frameworks
+            frameworks
+            // |> Seq.filter (fun f -> f = "netcoreapp3.1")
+            |> Seq.iter (fun framework -> 
+                printfn "Publishing with framework: %s" framework
+                DotNet.publish (
+                    fun p -> {
+                        p with
+                            // OutputPath = Some buildDir;
+                            Framework = Some framework
+                        }
+                ) "src/Forge"
+            )
+        )
 )
 
+
 Target.create "Test" (fun _ ->
-    exec "dotnet"  @"run --project .\tests\Forge.Tests\Forge.Tests.fsproj" "."
-    //exec "dotnet"  @"run --project .\tests\Forge.IntegrationTests\Forge.IntegrationTests.fsproj" "."
+    exec "dotnet"  ["run"; "--project"; @".\tests\Forge.Tests\Forge.Tests.fsproj"] "."
 )
 
 // --------------------------------------------------------------------------------------
